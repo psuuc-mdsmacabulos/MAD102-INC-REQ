@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1079893185900",
+    "project_id": "inc-req",
+    "storage_bucket": "inc-req.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1079893185900:android:05f5c450fe0f434637cf49",
+        "android_client_info": {
+          "package_name": "com.example.increq"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAVhDswjT3qHERXs7n8ih0TZaSnrPaz_Is"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
