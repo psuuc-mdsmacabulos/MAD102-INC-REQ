@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:inc_req_location_sharing_app/screens/auth/logout_screen.dart';
 import 'friend_list_screen.dart';
+import 'dart:async';
 
 class HomeScreen extends StatefulWidget {
   @override
@@ -17,12 +18,14 @@ class _HomeScreenState extends State<HomeScreen> {
   Position? _currentPosition;
   bool _isSharingLocation = false;
   BitmapDescriptor? _userIcon;
+  StreamSubscription<Position>? _positionStream;
+  StreamSubscription<QuerySnapshot>? _friendsLocationStream;
 
   @override
   void initState() {
     super.initState();
     _getCurrentLocation();
-    _fetchFriendsLocations();
+    _startListeningToFriendsLocations();
     _loadLocationSharingStatus();
     _loadIcons();
   }
@@ -101,17 +104,57 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _fetchFriendsLocations() async {
-    FirebaseFirestore firestore = FirebaseFirestore.instance;
-    User? user = FirebaseAuth.instance.currentUser;
+  void _startListeningToUserLocation() {
+    _positionStream = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+    ).listen((Position position) {
+      if (_isSharingLocation) {
+        if (_currentPosition != null) {
+          double distance = Geolocator.distanceBetween(
+            _currentPosition!.latitude,
+            _currentPosition!.longitude,
+            position.latitude,
+            position.longitude,
+          );
+          if (distance < 1.0) {
+            return;
+          }
+        }
 
-    try {
-      QuerySnapshot snapshot = await firestore.collection('users').get();
+        setState(() {
+          _currentPosition = position;
+        });
+
+        Marker updatedMarker = Marker(
+          markerId: const MarkerId('My Location'),
+          position: LatLng(position.latitude, position.longitude),
+          infoWindow: const InfoWindow(
+            title: 'My Location',
+            snippet: 'This is your current location.',
+          ),
+          icon: _userIcon!,
+        );
+
+        setState(() {
+          _markers
+              .removeWhere((marker) => marker.markerId.value == 'My Location');
+          _markers.add(updatedMarker);
+        });
+
+        _updateLocationInFirestore(position.latitude, position.longitude);
+      }
+    });
+  }
+
+  void _startListeningToFriendsLocations() {
+    _friendsLocationStream = FirebaseFirestore.instance
+        .collection('users')
+        .snapshots()
+        .listen((QuerySnapshot snapshot) {
+      Set<Marker> updatedMarkers = {};
 
       for (var doc in snapshot.docs) {
-        if (doc.id == user?.uid) {
-          continue;
-        }
+        if (doc.id == FirebaseAuth.instance.currentUser?.uid) continue;
 
         if (doc['locationSharing'] == true && doc['location'] != null) {
           GeoPoint location = doc['location'];
@@ -125,22 +168,50 @@ class _HomeScreenState extends State<HomeScreen> {
 
           LatLng friendLocation = LatLng(location.latitude, location.longitude);
 
-          _addMarker(
-            friendLocation,
-            friendName,
-            '$friendName\'s location',
-            friendIcon,
+          updatedMarkers.add(
+            Marker(
+              markerId: MarkerId(friendName),
+              position: friendLocation,
+              infoWindow: InfoWindow(
+                title: friendName,
+                snippet: '$friendName\'s location',
+              ),
+              icon: friendIcon,
+            ),
           );
         }
       }
-    } catch (e) {
-      print('Error fetching friends\' locations: $e');
-    }
+
+      if (_isSharingLocation && _currentPosition != null) {
+        updatedMarkers.add(
+          Marker(
+            markerId: const MarkerId('My Location'),
+            position: LatLng(
+              _currentPosition!.latitude,
+              _currentPosition!.longitude,
+            ),
+            infoWindow: const InfoWindow(
+              title: 'My Location',
+              snippet: 'This is your current location.',
+            ),
+            icon: _userIcon!,
+          ),
+        );
+      }
+
+      setState(() {
+        _markers = updatedMarkers;
+      });
+    });
   }
 
   void _addMarker(
       LatLng position, String markerId, String snippet, BitmapDescriptor icon) {
     setState(() {
+      print(
+          'Adding marker: $markerId at ${position.latitude}, ${position.longitude}');
+      _markers.removeWhere((marker) => marker.markerId.value == markerId);
+
       _markers.add(
         Marker(
           markerId: MarkerId(markerId),
@@ -148,9 +219,6 @@ class _HomeScreenState extends State<HomeScreen> {
           infoWindow: InfoWindow(
             title: markerId,
             snippet: snippet,
-            onTap: () {
-              _showCustomInfoWindow(markerId, snippet);
-            },
           ),
           icon: icon,
         ),
@@ -161,16 +229,26 @@ class _HomeScreenState extends State<HomeScreen> {
   void _toggleLocationSharing() {
     setState(() {
       _isSharingLocation = !_isSharingLocation;
+
       if (_isSharingLocation && _currentPosition != null) {
+        print('Location sharing enabled. Adding marker.');
+
         _addMarker(
           LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
           'My Location',
           'This is your current location.',
           _userIcon!,
         );
+
+        _startListeningToUserLocation();
         _updateLocationInFirestore(
-            _currentPosition!.latitude, _currentPosition!.longitude);
+          _currentPosition!.latitude,
+          _currentPosition!.longitude,
+        );
       } else {
+        print('Location sharing disabled. Removing marker.');
+
+        _positionStream?.cancel();
         _markers
             .removeWhere((marker) => marker.markerId.value == 'My Location');
         _removeLocationFromFirestore();
@@ -186,17 +264,17 @@ class _HomeScreenState extends State<HomeScreen> {
         print('User is not authenticated');
         return;
       }
-      String userId = user.uid;
 
+      String userId = user.uid;
       GeoPoint geoPoint = GeoPoint(latitude, longitude);
 
-      DocumentReference userDocRef =
-          FirebaseFirestore.instance.collection('users').doc(userId);
+      print(
+          'Updating Firestore: location = $latitude, $longitude, sharing = $_isSharingLocation');
 
-      await userDocRef.update({
+      await FirebaseFirestore.instance.collection('users').doc(userId).set({
         'location': geoPoint,
         'locationSharing': _isSharingLocation,
-      });
+      }, SetOptions(merge: true));
     } catch (e) {
       print('Error updating location in Firestore: $e');
     }
@@ -223,28 +301,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _showCustomInfoWindow(String title, String snippet) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(15),
-          ),
-          title: Text(title,
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          content: Text(snippet),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-              child: Text('Close', style: TextStyle(color: Colors.teal)),
-            ),
-          ],
-        );
-      },
-    );
+  @override
+  void dispose() {
+    _positionStream?.cancel();
+    _friendsLocationStream?.cancel();
+    super.dispose();
   }
 
   @override
